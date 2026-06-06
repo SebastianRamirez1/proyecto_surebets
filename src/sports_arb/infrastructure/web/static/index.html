@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sports Arbitrage Detector</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <a href="#main" class="skip-link">Saltar al contenido</a>
+
+  <header class="header" role="banner">
+    <div class="header__inner">
+      <h1 class="header__title">
+        <span class="header__icon" aria-hidden="true">⚡</span>
+        Arbitrage Detector
+      </h1>
+      <div class="status-badge" id="status-badge" role="status" aria-live="polite">
+        <span class="status-dot" id="status-dot"></span>
+        <span id="status-text">Conectando…</span>
+      </div>
+    </div>
+  </header>
+
+  <main id="main" class="main">
+    <div class="summary-bar" role="region" aria-label="Resumen">
+      <div class="summary-item">
+        <span class="summary-label">Oportunidades activas</span>
+        <span class="summary-value" id="opp-count">0</span>
+      </div>
+      <div class="summary-item">
+        <span class="summary-label">Mejor margen</span>
+        <span class="summary-value accent" id="best-margin">—</span>
+      </div>
+      <div class="summary-item">
+        <span class="summary-label">Última actualización</span>
+        <span class="summary-value" id="last-update">—</span>
+      </div>
+    </div>
+
+    <section aria-label="Oportunidades de arbitraje">
+      <div class="grid" id="opp-grid" role="list">
+        <div class="empty-state" id="empty-state">
+          <p class="empty-state__text">Escaneando mercados…</p>
+          <p class="empty-state__sub">Las oportunidades aparecerán aquí en tiempo real.</p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
