@@ -16,6 +16,11 @@ class OddsProvider(Protocol):
         Los providers sin caché pueden implementar esto como no-op.
         """
 
+    def available_bookmakers(self) -> list[str]:
+        """Lista de casas de apuestas conocidas por este provider.
+        Se devuelve ANTES del primer scan para poblar la UI.
+        """
+
 
 @runtime_checkable
 class OpportunityNotifier(Protocol):

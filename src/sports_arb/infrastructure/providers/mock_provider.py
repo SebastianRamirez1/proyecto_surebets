@@ -31,6 +31,9 @@ class MockOddsProvider:
     def invalidate_cache(self) -> None:
         pass  # el mock no tiene caché
 
+    def available_bookmakers(self) -> list[str]:
+        return sorted(_BOOKMAKERS)
+
     async def fetch_markets(self, sport: str) -> list[Market]:
         fixtures = _FIXTURES.get(sport, _FIXTURES["soccer"])
         markets: list[Market] = []

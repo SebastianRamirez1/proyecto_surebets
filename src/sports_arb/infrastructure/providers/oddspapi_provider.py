@@ -109,6 +109,20 @@ class OddsPapiProvider:
 
     # ── Public ────────────────────────────────────────────────────────────────
 
+    def available_bookmakers(self) -> list[str]:
+        """Devuelve casas conocidas de la caché; si está vacía, retorna una lista base."""
+        known: set[str] = set()
+        for market, _ in self._odds_cache.values():
+            for outcome in market.outcomes:
+                known.add(outcome.bookmaker)
+        if known:
+            return sorted(known)
+        # Lista base de las casas más comunes en OddsPapi antes del primer scan
+        return [
+            "1xBet", "Bet365", "Betfair", "Betway", "Bwin",
+            "Pinnacle", "Unibet", "William Hill", "888sport", "Betsson",
+        ]
+
     def invalidate_cache(self) -> None:
         """Limpia toda la caché para que el próximo fetch consulte el API real."""
         self._fixtures_cache.clear()

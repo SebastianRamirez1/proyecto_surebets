@@ -62,12 +62,19 @@ class ScanForArbitrageUseCase:
 
     @property
     def known_bookmakers(self) -> list[str]:
-        """Sorted list of all bookmakers seen in the latest scan."""
+        """Lista de casas disponibles.
+
+        Prioridad:
+        1. Casas vistas en el último scan (datos reales del provider).
+        2. Lista base del provider (disponible antes del primer scan).
+        """
         books: set[str] = set()
         for market in self._latest_markets:
             for outcome in market.outcomes:
                 books.add(outcome.bookmaker)
-        return sorted(books)
+        if books:
+            return sorted(books)
+        return self._provider.available_bookmakers()
 
     async def force_scan(self) -> tuple[list[ArbitrageOpportunity], int]:
         """Invalida caché y ejecuta un scan inmediato.

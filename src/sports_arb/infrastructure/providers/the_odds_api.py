@@ -33,6 +33,12 @@ class TheOddsApiProvider:
     def invalidate_cache(self) -> None:
         pass  # this provider makes a fresh request every call
 
+    def available_bookmakers(self) -> list[str]:
+        return [
+            "Bet365", "Betfair", "Betway", "Bwin", "Coral",
+            "Ladbrokes", "Pinnacle", "Unibet", "William Hill",
+        ]
+
     async def fetch_markets(self, sport: str) -> list[Market]:
         params = {
             "apiKey": self._api_key,
