@@ -28,6 +28,18 @@ def _build_provider() -> object:
             settings.max_fixtures_per_sport,
         )
         return provider
+    if settings.odds_provider == "scraper":
+        from ..providers.scraper_provider import ScraperProvider
+        provider_s = ScraperProvider(
+            cache_ttl=settings.api_cache_ttl,
+            max_matches=settings.max_fixtures_per_sport,
+        )
+        logger.info(
+            "Scraper activo — caché TTL %ds, máx %d partidos/deporte",
+            settings.api_cache_ttl,
+            settings.max_fixtures_per_sport,
+        )
+        return provider_s
     if settings.odds_provider == "the_odds_api":
         from ..providers.the_odds_api import TheOddsApiProvider
         return TheOddsApiProvider(api_key=settings.the_odds_api_key)

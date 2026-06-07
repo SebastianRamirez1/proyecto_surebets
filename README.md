@@ -2,13 +2,11 @@
 
 Motor en tiempo real que detecta **sure bets** (oportunidades de arbitraje deportivo) entre casas de apuestas, notifica por Telegram y muestra las oportunidades activas en un dashboard web en vivo.
 
-> **Alcance y restricciones:** este proyecto NO incluye ninguna capa de evasión ni anti-detección contra las casas de apuestas (sin rotación de proxies, sin spoofing de fingerprint, sin scraping disfrazado). Usa exclusivamente fuentes legales (The Odds API) o datos mock. Construir sistemas que burlen controles antifraude de terceros puede constituir acceso no autorizado a sus infraestructuras; ese no es el objetivo aquí.
-
 ---
 
 ## Qué hace
 
-1. Consulta cuotas de varias casas de apuestas vía [The Odds API](https://the-odds-api.com) (o datos mock para desarrollo sin credenciales).
+1. Consulta cuotas de varias casas de apuestas vía API (The Odds API, OddsPapi) o scraping de agregadores públicos como OddsPortal.
 2. Detecta mercados donde la suma de probabilidades implícitas de las mejores cuotas cae por debajo de 1 → arbitraje garantizado.
 3. Calcula el reparto óptimo del capital para igualar el retorno en todas las patas.
 4. Notifica cada nueva oportunidad por Telegram.
@@ -30,7 +28,7 @@ stake_i = capital · (1/cuota_i) / arb%
 ## Arquitectura
 
 ```
-infrastructure/  ←  providers (The Odds API / mock)
+infrastructure/  ←  providers (The Odds API / OddsPapi / scraper / mock)
                      notifiers (Telegram)
                      web (FastAPI + WebSocket + dashboard)
         ↓ implementan puertos del dominio
@@ -49,7 +47,7 @@ Copia `.env.example` a `.env` y rellena:
 THE_ODDS_API_KEY=   # de https://the-odds-api.com (plan gratuito: 500 req/mes)
 TELEGRAM_BOT_TOKEN= # de @BotFather en Telegram → /newbot
 TELEGRAM_CHAT_ID=   # ID del chat; consulta /getUpdates con tu token
-ODDS_PROVIDER=mock  # "mock" para dev sin credenciales, "the_odds_api" para prod
+ODDS_PROVIDER=mock  # mock | the_odds_api | oddspapi | scraper
 MIN_PROFIT_MARGIN=0.01
 TOTAL_STAKE=1000
 SCAN_INTERVAL=60
