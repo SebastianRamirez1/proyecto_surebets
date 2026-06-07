@@ -30,6 +30,9 @@ class TheOddsApiProvider:
         self._market_key = market_key
         self._timeout = timeout
 
+    def invalidate_cache(self) -> None:
+        pass  # this provider makes a fresh request every call
+
     async def fetch_markets(self, sport: str) -> list[Market]:
         params = {
             "apiKey": self._api_key,

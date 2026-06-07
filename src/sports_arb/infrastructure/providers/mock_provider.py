@@ -28,6 +28,9 @@ class MockOddsProvider:
         self._arb_probability = arb_probability
         self._rng = random.Random(seed)
 
+    def invalidate_cache(self) -> None:
+        pass  # el mock no tiene caché
+
     async def fetch_markets(self, sport: str) -> list[Market]:
         fixtures = _FIXTURES.get(sport, _FIXTURES["soccer"])
         markets: list[Market] = []

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 
 from ..domain.arbitrage import ArbitrageCalculator
 from ..domain.models import ArbitrageOpportunity, Market
@@ -22,6 +23,9 @@ class ScanForArbitrageUseCase:
         self._seen: set[str] = set()
         self._latest: list[ArbitrageOpportunity] = []
         self._latest_markets: list[Market] = []
+        self._last_sports: list[str] = []
+        self._last_force: float = 0.0
+        self._FORCE_COOLDOWN = 30.0  # segundos mínimos entre force scans
 
     async def execute(self, sports: list[str]) -> list[ArbitrageOpportunity]:
         all_markets: list[Market] = []
@@ -33,6 +37,7 @@ class ScanForArbitrageUseCase:
                 logger.error("Error al obtener mercados para %s: %s", sport, exc)
 
         self._latest_markets = all_markets
+        self._last_sports = sports
         opportunities = self._calculator.scan(all_markets)
         self._latest = opportunities
 
@@ -63,6 +68,22 @@ class ScanForArbitrageUseCase:
             for outcome in market.outcomes:
                 books.add(outcome.bookmaker)
         return sorted(books)
+
+    async def force_scan(self) -> tuple[list[ArbitrageOpportunity], int]:
+        """Invalida caché y ejecuta un scan inmediato.
+
+        Returns:
+            (opportunities, cooldown_remaining) — cooldown_remaining > 0 significa
+            que aún hay que esperar ese número de segundos antes de poder forzar otro scan.
+        """
+        remaining = self._FORCE_COOLDOWN - (time.monotonic() - self._last_force)
+        if remaining > 0:
+            return [], int(remaining)
+        self._provider.invalidate_cache()
+        self._last_force = time.monotonic()
+        sports = self._last_sports or ["soccer"]
+        opps = await self.execute(sports)
+        return opps, 0
 
     def filter_opportunities(
         self,

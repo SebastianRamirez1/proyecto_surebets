@@ -8,8 +8,10 @@ const bestMargin  = document.getElementById('best-margin');
 const lastUpdate  = document.getElementById('last-update');
 const statusDot   = document.getElementById('status-dot');
 const statusText  = document.getElementById('status-text');
-const capitalInput = document.getElementById('capital-input');
-const bookChips   = document.getElementById('book-chips');
+const capitalInput   = document.getElementById('capital-input');
+const bookChips      = document.getElementById('book-chips');
+const btnForce       = document.getElementById('btn-force-refresh');
+const refreshHint    = document.getElementById('refresh-hint');
 
 // ── State ─────────────────────────────────────────────────────────────────────
 const cards = new Map();   // event_id -> card element
@@ -247,6 +249,72 @@ function connectWS() {
     } catch (_) {}
   };
 }
+
+// ── Force refresh button ──────────────────────────────────────────────────────
+let cooldownTimer = null;
+
+function setRefreshState(state, extra) {
+  const icon  = btnForce.querySelector('.btn-refresh__icon');
+  const label = btnForce.querySelector('.btn-refresh__label');
+  btnForce.disabled = state !== 'idle';
+
+  if (state === 'idle') {
+    btnForce.className = 'btn-refresh';
+    icon.textContent  = '🔄';
+    label.textContent = 'Actualizar ahora';
+    refreshHint.textContent = 'Salta la caché y consulta el API en este momento.';
+  } else if (state === 'loading') {
+    btnForce.className = 'btn-refresh btn-refresh--loading';
+    icon.textContent  = '⏳';
+    label.textContent = 'Consultando API…';
+    refreshHint.textContent = '';
+  } else if (state === 'success') {
+    btnForce.className = 'btn-refresh btn-refresh--success';
+    icon.textContent  = '✓';
+    label.textContent = `Actualizado — ${extra} oportunidad${extra !== 1 ? 'es' : ''}`;
+    refreshHint.textContent = '';
+    setTimeout(() => setRefreshState('idle'), 4000);
+  } else if (state === 'cooldown') {
+    btnForce.className = 'btn-refresh btn-refresh--cooldown';
+    let secs = extra;
+    icon.textContent  = '⏱';
+    label.textContent = `Espera ${secs}s`;
+    refreshHint.textContent = 'Demasiadas solicitudes — aguardá un momento.';
+    clearInterval(cooldownTimer);
+    cooldownTimer = setInterval(() => {
+      secs -= 1;
+      if (secs <= 0) {
+        clearInterval(cooldownTimer);
+        setRefreshState('idle');
+      } else {
+        label.textContent = `Espera ${secs}s`;
+      }
+    }, 1000);
+  } else if (state === 'error') {
+    btnForce.className = 'btn-refresh btn-refresh--error';
+    icon.textContent  = '✗';
+    label.textContent = 'Error — intentá de nuevo';
+    refreshHint.textContent = extra || '';
+    setTimeout(() => setRefreshState('idle'), 4000);
+  }
+}
+
+btnForce.addEventListener('click', async () => {
+  setRefreshState('loading');
+  try {
+    const res  = await fetch('/api/scan/force', { method: 'POST' });
+    const data = await res.json();
+    if (res.status === 429) {
+      setRefreshState('cooldown', data.cooldown || 30);
+    } else if (data.ok) {
+      setRefreshState('success', data.opportunities);
+    } else {
+      setRefreshState('error', data.error);
+    }
+  } catch (_) {
+    setRefreshState('error', 'Sin conexión con el servidor');
+  }
+});
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 loadInitial();

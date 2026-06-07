@@ -384,6 +384,58 @@ body {
 }
 .book-chip:hover { border-color: var(--clr-accent); }
 
+/* ── Refresh bar ── */
+.refresh-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  margin-bottom: var(--sp-6);
+  flex-wrap: wrap;
+}
+.refresh-hint {
+  font-size: 0.8125rem;
+  color: var(--clr-text-muted);
+}
+.btn-refresh {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-4);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--clr-accent);
+  background: var(--clr-accent-bg);
+  color: var(--clr-accent);
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--transition), opacity var(--transition);
+  white-space: nowrap;
+}
+.btn-refresh:hover:not(:disabled) { background: rgba(56,189,248,0.18); }
+.btn-refresh:disabled { opacity: 0.55; cursor: not-allowed; }
+.btn-refresh__icon { font-size: 1rem; }
+
+.btn-refresh--loading {
+  border-color: var(--clr-text-muted);
+  background: transparent;
+  color: var(--clr-text-muted);
+}
+.btn-refresh--success {
+  border-color: var(--clr-green);
+  background: var(--clr-green-bg);
+  color: var(--clr-green);
+}
+.btn-refresh--cooldown {
+  border-color: var(--clr-warn);
+  background: rgba(251,191,36,0.08);
+  color: var(--clr-warn);
+}
+.btn-refresh--error {
+  border-color: #f87171;
+  background: rgba(248,113,113,0.08);
+  color: #f87171;
+}
+
 /* ── Bet steps (replaces old .bet) ── */
 .bets { display: flex; flex-direction: column; gap: var(--sp-3); }
 .bet-step {

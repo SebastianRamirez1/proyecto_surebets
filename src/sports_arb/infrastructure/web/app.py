@@ -49,7 +49,7 @@ def create_app(use_case: Any = None) -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
-        allow_methods=["GET"],
+        allow_methods=["GET", "POST"],
         allow_headers=["*"],
     )
 
@@ -69,6 +69,20 @@ def create_app(use_case: Any = None) -> FastAPI:
             return JSONResponse(content=[])
         opps = use_case.latest_opportunities
         return JSONResponse(content=[_serialize_opp(o) for o in opps])
+
+    @app.post("/api/scan/force")
+    async def force_scan() -> JSONResponse:
+        if use_case is None:
+            return JSONResponse(content={"ok": False, "error": "sin use case"}, status_code=503)
+        opps, cooldown = await use_case.force_scan()
+        if cooldown > 0:
+            return JSONResponse(
+                content={"ok": False, "cooldown": cooldown,
+                         "error": f"Espera {cooldown}s antes de forzar otro scan"},
+                status_code=429,
+            )
+        await broadcast_refresh()
+        return JSONResponse(content={"ok": True, "opportunities": len(opps)})
 
     @app.get("/api/bookmakers")
     async def get_bookmakers() -> JSONResponse:

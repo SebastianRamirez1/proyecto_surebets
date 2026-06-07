@@ -109,6 +109,12 @@ class OddsPapiProvider:
 
     # ── Public ────────────────────────────────────────────────────────────────
 
+    def invalidate_cache(self) -> None:
+        """Limpia toda la caché para que el próximo fetch consulte el API real."""
+        self._fixtures_cache.clear()
+        self._odds_cache.clear()
+        logger.info("OddsPapi: caché invalidada — el próximo scan usará el API real")
+
     async def fetch_markets(self, sport: str) -> list[Market]:
         fixture_ids = await self._get_fixture_ids(sport)
         markets: list[Market] = []
