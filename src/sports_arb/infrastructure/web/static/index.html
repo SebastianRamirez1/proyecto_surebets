@@ -26,6 +26,8 @@
   </header>
 
   <main id="main" class="main">
+
+    <!-- Summary bar -->
     <div class="summary-bar" role="region" aria-label="Resumen">
       <div class="summary-item">
         <span class="summary-label">Oportunidades activas</span>
@@ -41,6 +43,46 @@
       </div>
     </div>
 
+    <!-- Settings panel -->
+    <div class="settings-panel" role="region" aria-label="Configuración">
+
+      <div class="settings-section">
+        <label class="settings-label" for="capital-input">
+          💰 Tu capital disponible
+        </label>
+        <div class="capital-wrap">
+          <span class="capital-prefix" aria-hidden="true">$</span>
+          <input
+            type="number"
+            id="capital-input"
+            class="capital-input"
+            placeholder="1000"
+            min="1"
+            step="1"
+            aria-label="Capital en dólares"
+          />
+        </div>
+        <p class="settings-hint">Cambia el monto y las apuestas se recalculan al instante.</p>
+      </div>
+
+      <div class="settings-section settings-section--books">
+        <div class="settings-label-row">
+          <span class="settings-label">🏦 Casas de apuestas</span>
+          <div class="book-actions">
+            <button class="btn-link" id="select-all-books" type="button">Todas</button>
+            <span aria-hidden="true">·</span>
+            <button class="btn-link" id="select-none-books" type="button">Ninguna</button>
+          </div>
+        </div>
+        <div class="book-chips" id="book-chips" role="group" aria-label="Filtrar casas de apuestas">
+          <span class="book-chips__loading">Cargando casas…</span>
+        </div>
+        <p class="settings-hint">Solo se buscan arbs entre las casas seleccionadas.</p>
+      </div>
+
+    </div>
+
+    <!-- Opportunities grid -->
     <section aria-label="Oportunidades de arbitraje">
       <div class="grid" id="opp-grid" role="list">
         <div class="empty-state" id="empty-state">
@@ -49,6 +91,7 @@
         </div>
       </div>
     </section>
+
   </main>
 
   <script src="/static/app.js"></script>

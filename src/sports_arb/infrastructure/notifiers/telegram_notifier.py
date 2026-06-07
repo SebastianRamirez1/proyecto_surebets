@@ -32,18 +32,36 @@ class TelegramNotifier:
     def _format(self, opp: ArbitrageOpportunity) -> str:
         margin_pct = opp.profit_margin * 100
         profit = opp.profit_amount
+        capital = opp.total_stake
+        guaranteed = min(b.guaranteed_return for b in opp.bets)
         lines = [
-            "<b>Sure Bet detectada</b>",
-            f"Partido: {opp.market.label}",
-            f"Deporte: {opp.market.sport}",
-            f"Margen: <b>{margin_pct:.2f}%</b>",
-            f"Beneficio estimado: {profit:.2f} (stake total: {opp.total_stake:.0f})",
+            "🎯 <b>SUREBET DETECTADA</b>",
             "",
-            "Apuestas:",
+            f"⚽ {opp.market.label}  ({opp.market.sport})",
+            f"📊 Margen garantizado: <b>{margin_pct:.2f}%</b>",
+            (
+                f"💰 Con {capital:.0f} → ganarás <b>{profit:.2f}</b>"
+                " sin importar el resultado"
+            ),
+            "",
+            "📋 <b>INSTRUCCIONES DE APUESTA:</b>",
         ]
-        for bet in opp.bets:
-            lines.append(
-                f"  • {bet.outcome_name} @ {bet.price} en {bet.bookmaker} "
-                f"— stake: {bet.stake:.2f} ({bet.stake_pct:.1f}%)"
-            )
+        for i, bet in enumerate(opp.bets, 1):
+            lines += [
+                "",
+                f"<b>— PASO {i} ——————————————————</b>",
+                f"🏠 Casa:    <b>{bet.bookmaker}</b>",
+                f"🎲 Apuesta: <i>{bet.outcome_name}</i>",
+                f"📈 Cuota:   <b>{bet.price:.2f}</b>",
+                (
+                    f"💵 Monto:   <b>{bet.stake:.2f}</b>"
+                    f"  ({bet.stake_pct:.1f}% de tu capital)"
+                ),
+                f"↩️  Recibirás si gana: {bet.guaranteed_return:.2f}",
+            ]
+        lines += [
+            "",
+            f"✅ <b>Retorno mínimo garantizado: {guaranteed:.2f}</b>",
+            f"    (ganancia neta: +{profit:.2f})",
+        ]
         return "\n".join(lines)

@@ -14,10 +14,19 @@ class Settings(BaseSettings):
     total_stake: float = 1000.0
     scan_interval: int = 60
     sports: str = "soccer,tennis"
+    allowed_bookmakers: str = ""  # comma-separated; empty = todas las casas
 
     @property
     def sports_list(self) -> list[str]:
         return [s.strip() for s in self.sports.split(",") if s.strip()]
+
+    @property
+    def allowed_bookmakers_set(self) -> frozenset[str]:
+        if not self.allowed_bookmakers.strip():
+            return frozenset()
+        return frozenset(
+            b.strip() for b in self.allowed_bookmakers.split(",") if b.strip()
+        )
 
 
 settings = Settings()

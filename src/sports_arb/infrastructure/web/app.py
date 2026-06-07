@@ -16,6 +16,16 @@ logger = logging.getLogger(__name__)
 STATIC_DIR = Path(__file__).parent / "static"
 
 
+class _ConnPrefs:
+    """Per-WebSocket connection preferences (capital + bookmaker filter)."""
+
+    __slots__ = ("capital", "bookmakers")
+
+    def __init__(self) -> None:
+        self.capital: float | None = None
+        self.bookmakers: frozenset[str] = frozenset()
+
+
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         response = await call_next(request)
@@ -44,6 +54,9 @@ def create_app(use_case: Any = None) -> FastAPI:
     )
 
     active_connections: list[WebSocket] = []
+    conn_prefs: dict[int, _ConnPrefs] = {}
+
+    # ── REST endpoints ────────────────────────────────────────────────────────
 
     @app.get("/", response_class=HTMLResponse)
     async def dashboard() -> HTMLResponse:
@@ -57,33 +70,97 @@ def create_app(use_case: Any = None) -> FastAPI:
         opps = use_case.latest_opportunities
         return JSONResponse(content=[_serialize_opp(o) for o in opps])
 
+    @app.get("/api/bookmakers")
+    async def get_bookmakers() -> JSONResponse:
+        if use_case is None:
+            return JSONResponse(content=[])
+        return JSONResponse(content=use_case.known_bookmakers)
+
+    # ── WebSocket ─────────────────────────────────────────────────────────────
+
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket) -> None:
         await websocket.accept()
         active_connections.append(websocket)
+        prefs = _ConnPrefs()
+        conn_prefs[id(websocket)] = prefs
+
+        # Send current state immediately on connect
+        if use_case is not None:
+            opps = use_case.filter_opportunities()
+            await websocket.send_text(
+                json.dumps({"type": "refresh", "opportunities": [_serialize_opp(o) for o in opps]})
+            )
+
         try:
             while True:
-                await websocket.receive_text()
+                raw = await websocket.receive_text()
+                try:
+                    msg = json.loads(raw)
+                    if msg.get("type") == "prefs":
+                        _apply_prefs(msg, prefs)
+                        if use_case is not None:
+                            allowed = prefs.bookmakers if prefs.bookmakers else None
+                            opps = use_case.filter_opportunities(prefs.capital, allowed)
+                            await websocket.send_text(
+                                json.dumps({
+                                    "type": "refresh",
+                                    "opportunities": [_serialize_opp(o) for o in opps],
+                                })
+                            )
+                except (json.JSONDecodeError, ValueError, KeyError):
+                    pass
         except WebSocketDisconnect:
             active_connections.remove(websocket)
+            conn_prefs.pop(id(websocket), None)
 
-    async def broadcast(opportunity: Any) -> None:
-        data = json.dumps(_serialize_opp(opportunity))
-        dead = []
+    # ── Broadcast (called from scan loop) ────────────────────────────────────
+
+    async def broadcast_refresh() -> None:
+        if not use_case:
+            return
+        dead: list[WebSocket] = []
         for ws in active_connections:
+            prefs = conn_prefs.get(id(ws), _ConnPrefs())
+            allowed = prefs.bookmakers if prefs.bookmakers else None
             try:
+                opps = use_case.filter_opportunities(prefs.capital, allowed)
+                data = json.dumps({
+                    "type": "refresh",
+                    "opportunities": [_serialize_opp(o) for o in opps],
+                })
                 await ws.send_text(data)
             except Exception:
                 dead.append(ws)
         for ws in dead:
-            active_connections.remove(ws)
+            if ws in active_connections:
+                active_connections.remove(ws)
+            conn_prefs.pop(id(ws), None)
 
-    app.state.broadcast = broadcast
+    app.state.broadcast_refresh = broadcast_refresh
 
     if STATIC_DIR.exists():
         app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
     return app
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _apply_prefs(msg: dict[str, Any], prefs: _ConnPrefs) -> None:
+    if "capital" in msg:
+        raw = msg["capital"]
+        try:
+            cap = float(raw) if raw is not None else 0.0
+            prefs.capital = cap if cap > 0 else None
+        except (TypeError, ValueError):
+            prefs.capital = None
+    if "bookmakers" in msg:
+        bks = msg["bookmakers"]
+        prefs.bookmakers = (
+            frozenset(str(b) for b in bks) if isinstance(bks, list) and bks
+            else frozenset()
+        )
 
 
 def _serialize_opp(opp: Any) -> dict[str, Any]:

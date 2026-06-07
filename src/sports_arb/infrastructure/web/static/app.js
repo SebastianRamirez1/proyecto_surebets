@@ -1,35 +1,159 @@
 /* Sports Arbitrage Detector — dashboard */
 
-const grid      = document.getElementById('opp-grid');
-const emptyState = document.getElementById('empty-state');
-const oppCount  = document.getElementById('opp-count');
-const bestMargin = document.getElementById('best-margin');
-const lastUpdate = document.getElementById('last-update');
-const statusDot  = document.getElementById('status-dot');
-const statusText = document.getElementById('status-text');
+// ── DOM refs ─────────────────────────────────────────────────────────────────
+const grid        = document.getElementById('opp-grid');
+const emptyState  = document.getElementById('empty-state');
+const oppCount    = document.getElementById('opp-count');
+const bestMargin  = document.getElementById('best-margin');
+const lastUpdate  = document.getElementById('last-update');
+const statusDot   = document.getElementById('status-dot');
+const statusText  = document.getElementById('status-text');
+const capitalInput = document.getElementById('capital-input');
+const bookChips   = document.getElementById('book-chips');
 
-const cards = new Map(); // event_id -> card element
+// ── State ─────────────────────────────────────────────────────────────────────
+const cards = new Map();   // event_id -> card element
+const opps  = new Map();   // event_id -> opportunity data (latest from server)
+let currentCapital = null; // null = use server's total_stake
+let capitalDebounce = null;
+let ws = null;
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
 function setStatus(state) {
   statusDot.className = 'status-dot ' + state;
   statusText.textContent =
     state === 'connected' ? 'Conectado en vivo' :
-    state === 'error'     ? 'Sin conexión' :
+    state === 'error'     ? 'Sin conexión — reconectando…' :
                             'Conectando…';
 }
 
 function fmtTime(iso) {
-  return new Date(iso).toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  return new Date(iso).toLocaleTimeString('es', {
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  });
 }
 
+function fmtMoney(n) {
+  return n.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+
+function effectiveCapital(opp) {
+  return currentCapital || opp.total_stake;
+}
+
+// ── Capital live recalculation ────────────────────────────────────────────────
+capitalInput.addEventListener('input', () => {
+  const val = parseFloat(capitalInput.value);
+  currentCapital = val > 0 ? val : null;
+  // Re-render all cards instantly (client-side math, no server roundtrip)
+  for (const [id, opp] of opps.entries()) {
+    const existing = cards.get(id);
+    if (existing) {
+      const updated = renderCard(opp, false);
+      grid.replaceChild(updated, existing);
+      cards.set(id, updated);
+    }
+  }
+  updateSummary();
+  // Notify server (debounced, so it can filter future scans correctly)
+  clearTimeout(capitalDebounce);
+  capitalDebounce = setTimeout(sendPrefs, 400);
+});
+
+// ── Bookmaker chips ───────────────────────────────────────────────────────────
+async function loadBookmakers() {
+  try {
+    const res = await fetch('/api/bookmakers');
+    const books = await res.json();
+    renderBookChips(books);
+  } catch (_) {
+    bookChips.innerHTML = '<span class="book-chips__loading">No se pudieron cargar las casas.</span>';
+  }
+}
+
+function renderBookChips(books) {
+  if (!books.length) {
+    bookChips.innerHTML = '<span class="book-chips__loading">Sin datos de casas aún — espera el primer scan.</span>';
+    return;
+  }
+  bookChips.innerHTML = '';
+  books.forEach(book => {
+    const label = document.createElement('label');
+    label.className = 'book-chip active';
+    label.title = book;
+
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.value = book;
+    cb.checked = true;
+    cb.setAttribute('aria-label', book);
+    cb.addEventListener('change', () => {
+      label.classList.toggle('active', cb.checked);
+      sendPrefs();
+    });
+
+    const span = document.createElement('span');
+    span.textContent = book;
+
+    label.appendChild(cb);
+    label.appendChild(span);
+    bookChips.appendChild(label);
+  });
+}
+
+document.getElementById('select-all-books').addEventListener('click', () => {
+  bookChips.querySelectorAll('input[type=checkbox]').forEach(cb => {
+    cb.checked = true;
+    cb.closest('.book-chip').classList.add('active');
+  });
+  sendPrefs();
+});
+
+document.getElementById('select-none-books').addEventListener('click', () => {
+  bookChips.querySelectorAll('input[type=checkbox]').forEach(cb => {
+    cb.checked = false;
+    cb.closest('.book-chip').classList.remove('active');
+  });
+  sendPrefs();
+});
+
+// ── Send preferences to server ────────────────────────────────────────────────
+function sendPrefs() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  const selectedBooks = [...bookChips.querySelectorAll('input:checked')].map(cb => cb.value);
+  ws.send(JSON.stringify({
+    type: 'prefs',
+    capital: currentCapital,
+    bookmakers: selectedBooks,
+  }));
+}
+
+// ── Card rendering ────────────────────────────────────────────────────────────
 function renderCard(opp, isNew) {
-  const betsHtml = opp.bets.map(b => `
-    <div class="bet">
-      <span class="bet__outcome">${b.outcome}</span>
-      <span class="bet__price">@${b.price.toFixed(2)}</span>
-      <span class="bet__book">${b.bookmaker}</span>
-      <span class="bet__stake">${b.stake.toFixed(0)} (${b.stake_pct.toFixed(1)}%)</span>
-    </div>`).join('');
+  const capital = effectiveCapital(opp);
+  const profit  = opp.profit_margin_pct / 100 * capital;
+  const guaranteed = capital * (1 + opp.profit_margin_pct / 100);
+
+  const stepsHtml = opp.bets.map((b, i) => {
+    const stake  = b.stake_pct / 100 * capital;
+    const ret    = stake * b.price;
+    return `
+      <div class="bet-step">
+        <div class="bet-step__num">Paso ${i + 1}</div>
+        <div class="bet-step__body">
+          <div class="bet-step__book">Ve a <strong>${b.bookmaker}</strong></div>
+          <div class="bet-step__row">
+            <span>Apuesta: <strong>${b.outcome}</strong></span>
+            <span class="bet-step__price">@ ${b.price.toFixed(2)}</span>
+          </div>
+          <div class="bet-step__row">
+            <span>Monto: <strong>$${fmtMoney(stake)}</strong>
+              <em class="bet-step__pct">(${b.stake_pct.toFixed(1)}%)</em></span>
+            <span class="bet-step__return">→ $${fmtMoney(ret)}</span>
+          </div>
+        </div>
+      </div>`;
+  }).join('');
 
   const card = document.createElement('article');
   card.className = 'card' + (isNew ? ' new' : '');
@@ -44,64 +168,87 @@ function renderCard(opp, isNew) {
       <span class="card__margin-label">Margen garantizado</span>
       <div>
         <span class="card__margin-value">${opp.profit_margin_pct.toFixed(2)}%</span>
-        <div class="card__profit">+${opp.profit_amount.toFixed(2)} sobre ${opp.total_stake.toFixed(0)}</div>
+        <div class="card__profit">+$${fmtMoney(profit)} de $${fmtMoney(capital)}</div>
       </div>
     </div>
-    <div class="bets">${betsHtml}</div>
+    <div class="bets">${stepsHtml}</div>
+    <div class="card__guaranteed">
+      <span>✓ Retorno mínimo garantizado:</span>
+      <strong>$${fmtMoney(guaranteed)}</strong>
+    </div>
     <footer class="card__footer">Detectado: ${fmtTime(opp.detected_at)}</footer>`;
   return card;
 }
 
-function updateSummary() {
-  oppCount.textContent = cards.size;
-  if (cards.size === 0) {
-    bestMargin.textContent = '—';
-    return;
+// ── Grid management ───────────────────────────────────────────────────────────
+function handleRefresh(opportunities) {
+  // Remove cards no longer present
+  const newIds = new Set(opportunities.map(o => o.event_id));
+  for (const [id, card] of cards) {
+    if (!newIds.has(id)) {
+      if (card.parentNode === grid) grid.removeChild(card);
+      cards.delete(id);
+      opps.delete(id);
+    }
   }
-  const best = Math.max(...[...cards.values()].map(c =>
-    parseFloat(c.querySelector('.card__margin-value').textContent)));
-  bestMargin.textContent = best.toFixed(2) + '%';
-}
+  // Upsert each opportunity
+  opportunities.forEach(opp => {
+    opps.set(opp.event_id, opp);
+    const existing = cards.get(opp.event_id);
+    const isNew    = !existing;
+    const card     = renderCard(opp, isNew);
+    if (existing) {
+      grid.replaceChild(card, existing);
+    } else {
+      if (emptyState.parentNode === grid) grid.removeChild(emptyState);
+      grid.prepend(card);
+    }
+    cards.set(opp.event_id, card);
+  });
 
-function upsertCard(opp) {
-  const existing = cards.get(opp.event_id);
-  const isNew = !existing;
-  const card = renderCard(opp, isNew);
-
-  if (existing) {
-    grid.replaceChild(card, existing);
-  } else {
-    if (emptyState.parentNode === grid) grid.removeChild(emptyState);
-    grid.prepend(card);
-  }
-  cards.set(opp.event_id, card);
+  if (cards.size === 0 && emptyState.parentNode !== grid) grid.appendChild(emptyState);
   lastUpdate.textContent = fmtTime(new Date().toISOString());
   updateSummary();
 }
 
-/* Load existing opportunities on page load */
-async function loadInitial() {
-  try {
-    const res = await fetch('/api/opportunities');
-    const opps = await res.json();
-    opps.forEach(o => upsertCard(o));
-    if (cards.size === 0) grid.appendChild(emptyState);
-  } catch (_) {
-    grid.appendChild(emptyState);
-  }
+function updateSummary() {
+  oppCount.textContent = cards.size;
+  if (cards.size === 0) { bestMargin.textContent = '—'; return; }
+  const margins = [...opps.values()].map(o => o.profit_margin_pct);
+  bestMargin.textContent = Math.max(...margins).toFixed(2) + '%';
 }
 
-/* WebSocket for real-time updates */
+// ── Initial REST load (fallback before WS connects) ───────────────────────────
+async function loadInitial() {
+  try {
+    const res  = await fetch('/api/opportunities');
+    const data = await res.json();
+    if (data.length) handleRefresh(data);
+  } catch (_) { /* WS will handle it */ }
+  if (cards.size === 0 && emptyState.parentNode !== grid) grid.appendChild(emptyState);
+}
+
+// ── WebSocket ─────────────────────────────────────────────────────────────────
 function connectWS() {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  const ws = new WebSocket(`${proto}://${location.host}/ws`);
+  ws = new WebSocket(`${proto}://${location.host}/ws`);
 
-  ws.onopen  = () => setStatus('connected');
+  ws.onopen = () => {
+    setStatus('connected');
+    // Send current prefs so server applies them on first refresh
+    sendPrefs();
+  };
   ws.onclose = () => { setStatus('error'); setTimeout(connectWS, 3000); };
   ws.onerror = () => setStatus('error');
   ws.onmessage = ({ data }) => {
-    try { upsertCard(JSON.parse(data)); } catch (_) {}
+    try {
+      const msg = JSON.parse(data);
+      if (msg.type === 'refresh') handleRefresh(msg.opportunities);
+    } catch (_) {}
   };
 }
 
-loadInitial().then(() => connectWS());
+// ── Boot ──────────────────────────────────────────────────────────────────────
+loadInitial();
+loadBookmakers();
+connectWS();

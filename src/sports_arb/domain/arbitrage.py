@@ -14,6 +14,14 @@ class ArbitrageCalculator:
         self._min_profit_margin = min_profit_margin
         self._total_stake = total_stake
 
+    @property
+    def min_profit_margin(self) -> float:
+        return self._min_profit_margin
+
+    @property
+    def total_stake(self) -> float:
+        return self._total_stake
+
     def find_opportunity(self, market: Market) -> ArbitrageOpportunity | None:
         best = market.best_price_per_outcome()
         if len(best) < 2:

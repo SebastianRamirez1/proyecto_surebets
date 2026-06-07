@@ -41,6 +41,23 @@ class Market:
                 best[outcome.name] = outcome
         return best
 
+    def filter_bookmakers(self, allowed: frozenset[str]) -> Market:
+        """Return a copy keeping only outcomes from bookmakers in *allowed*.
+
+        If *allowed* is empty the original market is returned unchanged.
+        """
+        if not allowed:
+            return self
+        return Market(
+            event_id=self.event_id,
+            sport=self.sport,
+            home_team=self.home_team,
+            away_team=self.away_team,
+            commence_time=self.commence_time,
+            market_key=self.market_key,
+            outcomes=tuple(o for o in self.outcomes if o.bookmaker in allowed),
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class ArbitrageBet:

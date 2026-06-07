@@ -46,9 +46,7 @@ async def _scan_loop() -> None:
         try:
             opps = await _use_case.execute(settings.sports_list)
             logger.info("Scan: %d oportunidades", len(opps))
-            broadcast = app.state.broadcast
-            for opp in opps:
-                await broadcast(opp)
+            await app.state.broadcast_refresh()
         except Exception as exc:
             logger.error("Error en scan loop: %s", exc)
         await asyncio.sleep(settings.scan_interval)
