@@ -1,97 +1,100 @@
-"""Scraper de cuotas sobre OddsPortal (https://www.oddsportal.com)
+"""Scraper de cuotas usando Flashscore (https://www.flashscore.com).
 
-Cómo funciona
-─────────────
-OddsPortal carga los datos de cuotas en dos fases:
-  1. Página HTML del deporte  →  contiene IDs de partidos embebidos en el JS
-  2. Endpoint XHR interno     →  devuelve JSON con cuotas por partido
+Arquitectura
+────────────
+Fase 1 — Lista de partidos (httpx, sin browser):
+  GET https://global.flashscore.ninja/2/x/feed/f_1_0_{tz}_en_1
+  Formato propietario de Flashscore: campos KEY÷VALUE¬ separados por chr(247)/chr(172).
+  Extraemos: AA=match_id, CX=home, AF=away, AD=timestamp_unix.
 
-No requiere API key ni registro.
+Fase 2 — Cuotas (Playwright, headless Chromium):
+  Para cada partido navegamos a https://www.flashscore.com/match/{id}/
+  Hacemos click en el tab "ODDS" y extraemos las filas de la tabla de
+  comparación de cuotas del DOM renderizado.
 
-Buenas prácticas implementadas
-───────────────────────────────
-- User-Agent realista + headers de navegador
-- Delay configurable entre requests (default 2 s)
-- Caché en memoria con TTL configurable (default 30 min)
-- Máximo de partidos configurable para no sobrecargar
-- Logging detallado para poder depurar cuando el sitio cambia
+Instalación (una sola vez)
+──────────────────────────
+    pip install playwright
+    playwright install chromium
 
 Notas de mantenimiento
 ──────────────────────
-Los selectores CSS y las rutas de los endpoints pueden cambiar cuando
-OddsPortal actualiza su front-end. Si algo deja de funcionar abrí
-DevTools → Network → XHR/Fetch y buscá las requests que cargan cuotas.
+Flashscore actualiza su front-end frecuentemente. Si algo deja de funcionar:
+- Arrancá con LOG_LEVEL=DEBUG para ver qué feeds/feeds se capturan
+- Abrí devtools en https://www.flashscore.com y buscá los feeds ninja
+- Los separadores de campo son chr(247)=÷ y chr(172)=¬
 """
 from __future__ import annotations
 
 import asyncio
 import logging
-import re
+import socket
 import time
 from datetime import UTC, datetime
 
 import httpx
-from bs4 import BeautifulSoup
 
 from ...domain.models import Market, Outcome
 
 logger = logging.getLogger(__name__)
 
-_BASE = "https://www.oddsportal.com"
+# ── Constantes del protocolo Flashscore ───────────────────────────────────────
+_FIELD_SEP = chr(247)   # ÷  separa nombre de campo de su valor
+_FIELD_END = chr(172)   # ¬  termina un campo
+_RECORD_SEP = "~"       # separa registros de partido dentro de la respuesta
 
-# Mapeo de nombre de deporte del proyecto → slug en OddsPortal
-_SPORT_SLUG: dict[str, str] = {
-    "soccer":     "soccer",
-    "football":   "soccer",
-    "tennis":     "tennis",
-    "basketball": "basketball",
-    "baseball":   "baseball",
-    "hockey":     "hockey",
-    "volleyball": "volleyball",
-    "handball":   "handball",
-}
+_NINJA_BASE = "https://global.flashscore.ninja/2/x/feed"
+_FS_BASE = "https://www.flashscore.com"
 
-# Headers que simulan un navegador real
-_HEADERS = {
+# Headers que Flashscore exige en las peticiones al feed
+_FEED_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/125.0.0.0 Safari/537.36"
     ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "es-AR,es;q=0.9,en;q=0.8",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Connection": "keep-alive",
-    "Upgrade-Insecure-Requests": "1",
+    "Referer": "https://www.flashscore.com/",
+    "Origin": "https://www.flashscore.com",
+    "X-Fsign": "SW9D1eZo",
+    "Accept": "*/*",
+    "Accept-Language": "en-US,en;q=0.9",
 }
 
-_AJAX_HEADERS = {
-    **_HEADERS,
-    "Accept": "application/json, text/javascript, */*; q=0.01",
-    "X-Requested-With": "XMLHttpRequest",
-    "Referer": _BASE,
+# Mapeo de deporte del proyecto → parámetro numérico en el feed de Flashscore
+_SPORT_ID: dict[str, str] = {
+    "soccer": "1",
+    "football": "1",
+    "tennis": "2",
+    "basketball": "3",
+    "baseball": "16",
+    "hockey": "4",
+    "volleyball": "23",
+    "handball": "6",
 }
 
 
 class ScraperProvider:
-    """Proveedor de cuotas via scraping de OddsPortal."""
+    """Proveedor de cuotas via scraping de Flashscore."""
 
     name = "scraper"
 
     def __init__(
         self,
-        request_delay: float = 2.0,
+        request_delay: float = 2.5,
         cache_ttl: int = 1800,
         max_matches: int = 5,
-        timeout: float = 20.0,
+        timeout: float = 30.0,
     ) -> None:
         self._delay = request_delay
         self._cache_ttl = cache_ttl
         self._max_matches = max_matches
-        self._timeout = timeout
+        self._timeout_ms = int(timeout * 1000)
 
-        # caché: sport -> (markets, timestamp)
+        # sport -> (markets, monotonic_ts)
         self._cache: dict[str, tuple[list[Market], float]] = {}
+        # IP resueltas en el inicio (evita fallos DNS de Chromium)
+        self._fs_ip: str | None = None
+        self._ninja_ip: str | None = None
 
     # ── Protocol ─────────────────────────────────────────────────────────────
 
@@ -100,12 +103,11 @@ class ScraperProvider:
         logger.info("Scraper: caché limpiada")
 
     def available_bookmakers(self) -> list[str]:
-        # OddsPortal agrega ~60 casas; listamos las más comunes
-        return [
-            "1xBet", "888sport", "Bet365", "Betfair",
-            "Betsson", "Betway", "Bwin", "Coral",
-            "Ladbrokes", "Pinnacle", "Unibet", "William Hill",
-        ]
+        return sorted([
+            "Bet365", "Betano", "Betway", "Bwin",
+            "1xBet", "Pinnacle", "Unibet", "William Hill",
+            "888sport", "Betfair", "Betsson", "Ladbrokes",
+        ])
 
     async def fetch_markets(self, sport: str) -> list[Market]:
         cached = self._cache.get(sport)
@@ -118,221 +120,275 @@ class ScraperProvider:
         logger.info("Scraper: %d mercados para '%s'", len(markets), sport)
         return markets
 
-    # ── Scraping ──────────────────────────────────────────────────────────────
+    # ── Fase 1: lista de partidos vía httpx ───────────────────────────────────
+
+    async def _fetch_match_list(self, sport: str) -> list[dict[str, str]]:
+        """Obtiene la lista de próximos partidos desde el feed de Flashscore."""
+        sport_id = _SPORT_ID.get(sport.lower(), "1")
+        # El -5 es el offset de timezone en horas (muestra partidos de las próximas horas)
+        url = f"{_NINJA_BASE}/f_{sport_id}_0_-5_en_1"
+
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.get(url, headers=_FEED_HEADERS)
+                resp.raise_for_status()
+                raw = resp.text
+        except httpx.HTTPError as exc:
+            logger.error("Scraper: error obteniendo feed — %s", exc)
+            return []
+
+        return _parse_flashscore_feed(raw)
+
+    # ── Fase 2: cuotas vía Playwright ─────────────────────────────────────────
 
     async def _scrape(self, sport: str) -> list[Market]:
-        slug = _SPORT_SLUG.get(sport.lower(), sport.lower())
-        url = f"{_BASE}/{slug}/"
+        # Resolver IPs con el sistema DNS (más fiable que el DNS interno de Chromium)
+        self._resolve_dns()
 
-        async with httpx.AsyncClient(
-            timeout=self._timeout,
-            follow_redirects=True,
-        ) as client:
-            # 1. Página principal — obtener cookies de sesión + IDs de partidos
-            logger.info("Scraper: GET %s", url)
-            try:
-                resp = await client.get(url, headers=_HEADERS)
-                resp.raise_for_status()
-            except httpx.HTTPStatusError as exc:
-                logger.error("Scraper: HTTP %s en %s", exc.response.status_code, url)
-                return []
-            except httpx.HTTPError as exc:
-                logger.error("Scraper: error de red en %s — %s", url, exc)
-                return []
+        matches = await self._fetch_match_list(sport)
+        if not matches:
+            logger.warning("Scraper: no se encontraron partidos para '%s'", sport)
+            return []
 
-            html = resp.text
-            cookies = dict(resp.cookies)
-            match_ids = self._extract_match_ids(html)
+        logger.info("Scraper: %d partidos en el feed, procesando primeros %d",
+                    len(matches), self._max_matches)
 
-            if not match_ids:
-                logger.warning(
-                    "Scraper: no se encontraron IDs de partidos en %s — "
-                    "OddsPortal puede haber cambiado su HTML. "
-                    "Abrí DevTools → Network → XHR y buscá el endpoint de partidos.",
-                    url,
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError:
+            logger.error(
+                "Playwright no está instalado.\n"
+                "  pip install playwright\n"
+                "  playwright install chromium"
+            )
+            return []
+
+        markets: list[Market] = []
+
+        try:
+            async with async_playwright() as pw:
+                browser = await pw.chromium.launch(
+                    headless=True,
+                    args=self._chromium_args(),
                 )
-                return []
+                ctx = await browser.new_context(
+                    user_agent=_FEED_HEADERS["User-Agent"],
+                    locale="en-US",
+                    viewport={"width": 1280, "height": 900},
+                )
 
-            logger.info("Scraper: %d partidos encontrados", len(match_ids))
+                for match in matches[: self._max_matches]:
+                    await asyncio.sleep(self._delay)
+                    market = await self._scrape_match_odds(ctx, match, sport)
+                    if market:
+                        markets.append(market)
 
-            # 2. Cuotas por partido
-            markets: list[Market] = []
-            for mid in match_ids[: self._max_matches]:
-                await asyncio.sleep(self._delay)
-                market = await self._fetch_match_odds(client, mid, sport, cookies)
-                if market is not None:
-                    markets.append(market)
+                await browser.close()
+
+        except Exception as exc:
+            logger.error("Scraper: error general — %s", exc, exc_info=True)
 
         return markets
 
-    def _extract_match_ids(self, html: str) -> list[str]:
-        """Extrae IDs de partidos del HTML de OddsPortal.
-
-        OddsPortal embebe los datos de partidos en el JavaScript de la página
-        como objetos JSON dentro de <script> tags. Buscamos el patrón
-        que contiene los IDs únicos de cada partido.
-        """
-        ids: list[str] = []
-
-        # Patrón 1: IDs en atributos data-* de elementos del DOM
-        soup = BeautifulSoup(html, "lxml")
-        for el in soup.select("[data-id]"):
-            mid = el.get("data-id")
-            if mid and isinstance(mid, str) and len(mid) > 6 and mid not in ids:
-                ids.append(mid)
-
-        # Patrón 2: IDs en el JS embebido (formato "id":"xABCDEF")
-        if not ids:
-            for match in re.finditer(r'"id"\s*:\s*"([a-zA-Z0-9]{8,})"', html):
-                mid = match.group(1)
-                if mid not in ids:
-                    ids.append(mid)
-
-        # Patrón 3: links con /match/ en el href
-        if not ids:
-            for a in soup.select("a[href*='/match/']"):
-                href = str(a.get("href", ""))
-                # /match/soccer/spain/laliga/real-madrid-barcelona/xABCDEF/
-                parts = [p for p in href.split("/") if p]
-                if parts:
-                    mid = parts[-1]
-                    if re.match(r"^[a-zA-Z0-9]{6,}$", mid) and mid not in ids:
-                        ids.append(mid)
-
-        logger.debug("Scraper: IDs extraídos: %s", ids[:10])
-        return ids
-
-    async def _fetch_match_odds(
-        self,
-        client: httpx.AsyncClient,
-        match_id: str,
-        sport: str,
-        cookies: dict[str, str],
-    ) -> Market | None:
-        """Llama al endpoint interno de OddsPortal para obtener cuotas de un partido."""
-        # OddsPortal usa esta URL para cargar cuotas vía XHR
-        ajax_url = f"{_BASE}/feed/match-event/?id={match_id}&isHistory=false"
-
-        logger.debug("Scraper: GET odds %s", ajax_url)
+    def _resolve_dns(self) -> None:
+        """Resuelve IPs una sola vez; las usa en `--host-resolver-rules`."""
+        if self._fs_ip and self._ninja_ip:
+            return
         try:
-            resp = await client.get(
-                ajax_url,
-                headers={**_AJAX_HEADERS, "Referer": f"{_BASE}/{sport}/"},
-                cookies=cookies,
+            self._fs_ip = socket.gethostbyname("www.flashscore.com")
+            self._ninja_ip = socket.gethostbyname("global.flashscore.ninja")
+            logger.debug("Scraper: DNS  flashscore=%s  ninja=%s", self._fs_ip, self._ninja_ip)
+        except OSError as exc:
+            logger.warning("Scraper: no se pudo resolver DNS — %s", exc)
+            self._fs_ip = None
+            self._ninja_ip = None
+
+    def _chromium_args(self) -> list[str]:
+        args = ["--no-sandbox", "--disable-dev-shm-usage"]
+        if self._fs_ip and self._ninja_ip:
+            rules = (
+                f"MAP www.flashscore.com {self._fs_ip},"
+                f"MAP global.flashscore.ninja {self._ninja_ip}"
             )
-            resp.raise_for_status()
-            data = resp.json()
-        except httpx.HTTPStatusError as exc:
-            logger.warning("Scraper: HTTP %s para match %s", exc.response.status_code, match_id)
-            return None
-        except httpx.HTTPError as exc:
-            logger.warning("Scraper: error de red para match %s — %s", match_id, exc)
-            return None
-        except Exception as exc:
-            logger.warning("Scraper: respuesta no es JSON para match %s — %s", match_id, exc)
-            return None
+            args.append(f"--host-resolver-rules={rules}")
+        return args
 
-        return self._parse_match(data, match_id, sport)
-
-    def _parse_match(
-        self, data: object, match_id: str, sport: str
+    async def _scrape_match_odds(
+        self, ctx: object, match: dict[str, str], sport: str
     ) -> Market | None:
-        """Convierte la respuesta JSON de OddsPortal en un Market del dominio."""
-        if not isinstance(data, dict):
-            return None
+        """Navega a la página del partido, hace click en ODDS y extrae cuotas."""
+        from playwright.async_api import BrowserContext
 
-        # Navegar al nodo del evento (puede estar bajo "d" o "data")
-        event: dict[str, object] = {}
-        for key in ("d", "data", "event"):
-            val = data.get(key)
-            if isinstance(val, dict):
-                event = val
-                break
-        if not event:
-            event = data
+        match_id = match["id"]
+        home = match.get("home", "?")
+        away = match.get("away", "?")
+        ts = match.get("ts", "")
 
-        home = str(event.get("home") or event.get("home_name") or event.get("participant1") or "?")
-        away = str(event.get("away") or event.get("away_name") or event.get("participant2") or "?")
-        sport_name = str(event.get("sport") or sport)
-
-        start_ts = event.get("start_time") or event.get("startTime") or event.get("time")
         try:
             commence = (
-                datetime.fromtimestamp(float(str(start_ts)), tz=UTC)
-                if start_ts is not None
-                else datetime.now(UTC)
+                datetime.fromtimestamp(float(ts), tz=UTC)
+                if ts else datetime.now(UTC)
             )
-        except (ValueError, TypeError, OSError):
+        except (ValueError, OSError):
             commence = datetime.now(UTC)
 
-        outcomes: list[Outcome] = []
-        # Las cuotas están bajo "odds" o "bookmakers"
-        odds_data = event.get("odds") or event.get("bookmakers") or data.get("odds") or {}
+        url = f"{_FS_BASE}/match/{match_id}/"
+        logger.debug("Scraper: %s vs %s — %s", home, away, url)
 
-        if isinstance(odds_data, dict):
-            # Formato: {"Bet365": {"1": 2.10, "X": 3.30, "2": 4.00}, ...}
-            for book_name, markets in odds_data.items():
-                if not isinstance(markets, dict):
-                    continue
-                for outcome_name, price in markets.items():
-                    try:
-                        p = float(str(price))
-                        if p <= 1.0:
-                            continue
-                        # Normalizar "1"/"X"/"2" a nombres legibles
-                        label = _normalize_outcome(outcome_name, home, away)
-                        outcomes.append(
-                            Outcome(name=label, bookmaker=str(book_name), price=p)
-                        )
-                    except (ValueError, TypeError):
-                        continue
+        assert isinstance(ctx, BrowserContext)
+        page = await ctx.new_page()
+        try:
+            await page.goto(url, wait_until="domcontentloaded",
+                            timeout=self._timeout_ms)
+            await asyncio.sleep(2)
 
-        elif isinstance(odds_data, list):
-            # Formato alternativo: [{"bookmaker": "Bet365", "outcome": "1", "odds": 2.10}, ...]
-            for row in odds_data:
-                if not isinstance(row, dict):
-                    continue
-                book = str(row.get("bookmaker") or row.get("name") or "?")
-                outcome_name = str(row.get("outcome") or row.get("result") or "?")
-                price_raw = row.get("odds") or row.get("price")
+            # Hacer click en el tab "ODDS"
+            tabs = await page.query_selector_all("a, button")
+            clicked = False
+            for tab in tabs:
                 try:
-                    p = float(str(price_raw))
-                    if p <= 1.0:
-                        continue
-                    label = _normalize_outcome(outcome_name, home, away)
-                    outcomes.append(Outcome(name=label, bookmaker=book, price=p))
-                except (ValueError, TypeError):
+                    txt = (await tab.inner_text()).strip().upper()
+                    if txt in ("ODDS", "ODDS COMPARISON"):
+                        await tab.click()
+                        await asyncio.sleep(3)
+                        clicked = True
+                        break
+                except Exception:
                     continue
 
-        if not outcomes:
-            logger.debug(
-                "Scraper: sin outcomes para match %s — "
-                "keys disponibles: %s",
-                match_id,
-                list(event.keys())[:15],
+            if not clicked:
+                logger.debug("Scraper: tab ODDS no encontrado para %s", match_id)
+
+            # Extraer pares (bookmaker, odds) de la tabla
+            import json as _json
+            raw_json: str = await page.evaluate(_JS_EXTRACT_ODDS_ROWS)
+            book_odds: list[dict[str, object]] = _json.loads(raw_json)
+            outcomes = _book_odds_to_outcomes(book_odds, home, away)
+
+            if not outcomes:
+                logger.debug(
+                    "Scraper: sin outcomes para %s vs %s (%d bookmakers en DOM)",
+                    home, away, len(book_odds),
+                )
+                return None
+
+            return Market(
+                event_id=f"fs-{match_id}",
+                sport=sport,
+                home_team=home,
+                away_team=away,
+                commence_time=commence,
+                market_key="h2h",
+                outcomes=tuple(outcomes),
             )
+
+        except Exception as exc:
+            logger.warning("Scraper: error en %s vs %s — %s", home, away, exc)
             return None
-
-        return Market(
-            event_id=f"scraper-{match_id}",
-            sport=sport_name,
-            home_team=home,
-            away_team=away,
-            commence_time=commence,
-            market_key="h2h",
-            outcomes=tuple(outcomes),
-        )
+        finally:
+            await page.close()
 
 
-def _normalize_outcome(raw: str, home: str, away: str) -> str:
-    """Convierte "1"/"X"/"2" al nombre real del equipo o resultado."""
-    mapping: dict[str, str] = {
-        "1": home,
-        "2": away,
-        "X": "Empate",
-        "x": "Empate",
-        "draw": "Empate",
-        "home": home,
-        "away": away,
-    }
-    return mapping.get(raw.strip(), raw.strip())
+# ── JS embebido — extrae pares (bookmaker, odds[]) de la tabla de Flashscore ──
+# Usa concatenación de strings para evitar problemas de escape Python ↔ JS.
+# Estructura del DOM de Flashscore (2025):
+#   .oddsTab__tableWrapper
+#     img[src*="bookmakers"][alt="Bookmaker Name"]  ← nombres por orden
+#     .ui-table__body > .ui-table__row              ← odds por orden
+
+_JS_EXTRACT_ODDS_ROWS = (
+    "() => {"
+    "  const NL = String.fromCharCode(10);"
+    "  const wrapper = document.querySelector('.oddsTab__tableWrapper');"
+    "  if (!wrapper) return JSON.stringify([]);"
+    # bookmaker images in DOM order
+    "  const imgs = Array.from(wrapper.querySelectorAll('img[alt]'))"
+    "    .filter(img => (img.src || '').includes('bookmakers'));"
+    # odds rows: only rows with at least one number > 1
+    "  const oddsRows = Array.from(wrapper.querySelectorAll('.ui-table__row'))"
+    "    .map(r => (r.innerText || '').trim().split(NL).map(s => s.trim()))"
+    "    .filter(parts => parts.some(p => parseFloat(p) > 1.0));"
+    "  const result = [];"
+    "  const count = Math.min(imgs.length, oddsRows.length);"
+    "  for (let i = 0; i < count; i++) {"
+    "    const nums = oddsRows[i].filter(p => parseFloat(p) > 1.0 && !isNaN(parseFloat(p)));"
+    "    if (nums.length >= 2) {"
+    "      result.push({ bookmaker: imgs[i].alt, odds: nums });"
+    "    }"
+    "  }"
+    "  return JSON.stringify(result);"
+    "}"
+)
+
+
+# ── Parsers ───────────────────────────────────────────────────────────────────
+
+def _parse_flashscore_feed(raw: str) -> list[dict[str, str]]:
+    """Convierte el texto propietario de Flashscore en una lista de partidos."""
+    events: list[dict[str, str]] = []
+
+    for segment in raw.split(_RECORD_SEP):
+        fields: dict[str, str] = {}
+        # Cada campo tiene formato:  KEY÷VALUE¬
+        for chunk in segment.split(_FIELD_END):
+            if _FIELD_SEP in chunk:
+                key, _, val = chunk.partition(_FIELD_SEP)
+                if key.strip():
+                    fields[key.strip()] = val.strip()
+
+        if "AA" not in fields:
+            continue
+
+        # AA=id, CX=home (o AE como fallback), AF=away, AD=timestamp
+        home = fields.get("CX") or fields.get("AE") or "?"
+        away = fields.get("AF") or "?"
+        ts = fields.get("AD") or ""
+
+        events.append({
+            "id": fields["AA"],
+            "home": home,
+            "away": away,
+            "ts": ts,
+        })
+
+    return events
+
+
+def _book_odds_to_outcomes(
+    book_odds: list[dict[str, object]], home: str, away: str
+) -> list[Outcome]:
+    """Convierte [{bookmaker, odds: [str, ...]}, ...] en Outcomes del dominio.
+
+    El JS de Flashscore ya separó nombres de bookmakers de sus cuotas.
+    Parámetros:
+      book_odds  — lista de dicts {'bookmaker': str, 'odds': list[str]}
+      home/away  — nombres de los equipos para etiquetar las cuotas 1/2
+    """
+    outcomes: list[Outcome] = []
+
+    for item in book_odds:
+        bookmaker = str(item.get("bookmaker") or "").strip()
+        raw_odds = item.get("odds") or []
+        if not bookmaker or not isinstance(raw_odds, list):
+            continue
+
+        nums = []
+        for o in raw_odds:
+            try:
+                p = float(str(o))
+                if 1.0 < p < 500.0:
+                    nums.append(p)
+            except (ValueError, TypeError):
+                continue
+
+        if len(nums) < 2:
+            continue
+
+        labels = [home, "Empate", away] if len(nums) >= 3 else [home, away]
+        for label, price in zip(labels, nums[:3], strict=False):
+            outcomes.append(Outcome(name=label, bookmaker=bookmaker, price=price))
+
+    logger.debug(
+        "Scraper: %d outcomes de %d bookmakers", len(outcomes), len(book_odds)
+    )
+    return outcomes
