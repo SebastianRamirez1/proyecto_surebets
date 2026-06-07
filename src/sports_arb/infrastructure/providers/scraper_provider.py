@@ -154,7 +154,7 @@ class ScraperProvider:
                     len(matches), self._max_matches)
 
         try:
-            from playwright.async_api import async_playwright
+            import playwright  # noqa: F401
         except ImportError:
             logger.error(
                 "Playwright no está instalado.\n"
@@ -163,32 +163,122 @@ class ScraperProvider:
             )
             return []
 
-        markets: list[Market] = []
+        # En Windows con uvicorn el event loop no soporta create_subprocess_exec.
+        # Solución: correr Playwright SINCRÓNICO en un thread separado con su
+        # propio event loop, sin interferir con el loop de asyncio/uvicorn.
+        loop = asyncio.get_event_loop()
+        markets: list[Market] = await loop.run_in_executor(
+            None,
+            self._scrape_sync,
+            matches[: self._max_matches],
+            sport,
+        )
+        return markets
 
+    def _scrape_sync(
+        self, matches: list[dict[str, str]], sport: str
+    ) -> list[Market]:
+        """Ejecuta Playwright sincrónico en un thread — evita conflictos con uvicorn."""
         try:
-            async with async_playwright() as pw:
-                browser = await pw.chromium.launch(
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            return []
+
+        markets: list[Market] = []
+        try:
+            with sync_playwright() as pw:
+                browser = pw.chromium.launch(
                     headless=True,
                     args=self._chromium_args(),
                 )
-                ctx = await browser.new_context(
+                ctx = browser.new_context(
                     user_agent=_FEED_HEADERS["User-Agent"],
                     locale="en-US",
                     viewport={"width": 1280, "height": 900},
                 )
-
-                for match in matches[: self._max_matches]:
-                    await asyncio.sleep(self._delay)
-                    market = await self._scrape_match_odds(ctx, match, sport)
+                for match in matches:
+                    import time as _time
+                    _time.sleep(self._delay)
+                    market = self._scrape_match_sync(ctx, match, sport)
                     if market:
                         markets.append(market)
-
-                await browser.close()
-
+                browser.close()
         except Exception as exc:
             logger.error("Scraper: error general — %s", exc, exc_info=True)
-
         return markets
+
+    def _scrape_match_sync(
+        self, ctx: object, match: dict[str, str], sport: str
+    ) -> Market | None:
+        """Versión sincrónica de _scrape_match_odds para uso en thread."""
+        import json as _json
+
+        from playwright.sync_api import BrowserContext as SyncBrowserContext
+
+        assert isinstance(ctx, SyncBrowserContext)
+
+        match_id = match["id"]
+        home = match.get("home", "?")
+        away = match.get("away", "?")
+        ts = match.get("ts", "")
+
+        try:
+            commence = (
+                datetime.fromtimestamp(float(ts), tz=UTC)
+                if ts else datetime.now(UTC)
+            )
+        except (ValueError, OSError):
+            commence = datetime.now(UTC)
+
+        url = f"{_FS_BASE}/match/{match_id}/"
+        logger.debug("Scraper: %s vs %s — %s", home, away, url)
+
+        page = ctx.new_page()
+        try:
+            page.goto(url, wait_until="domcontentloaded",
+                      timeout=self._timeout_ms)
+            page.wait_for_timeout(2000)
+
+            # Click en el tab "ODDS"
+            clicked = False
+            for tab in page.query_selector_all("a, button"):
+                try:
+                    if tab.inner_text().strip().upper() in ("ODDS", "ODDS COMPARISON"):
+                        tab.click()
+                        page.wait_for_timeout(3000)
+                        clicked = True
+                        break
+                except Exception:
+                    continue
+
+            if not clicked:
+                logger.debug("Scraper: tab ODDS no encontrado para %s", match_id)
+
+            raw_json: str = page.evaluate(_JS_EXTRACT_ODDS_ROWS)
+            book_odds: list[dict[str, object]] = _json.loads(raw_json)
+            outcomes = _book_odds_to_outcomes(book_odds, home, away)
+
+            if not outcomes:
+                logger.debug(
+                    "Scraper: sin outcomes para %s vs %s (%d bookmakers en DOM)",
+                    home, away, len(book_odds),
+                )
+                return None
+
+            return Market(
+                event_id=f"fs-{match_id}",
+                sport=sport,
+                home_team=home,
+                away_team=away,
+                commence_time=commence,
+                market_key="h2h",
+                outcomes=tuple(outcomes),
+            )
+        except Exception as exc:
+            logger.warning("Scraper: error en %s vs %s — %s", home, away, exc)
+            return None
+        finally:
+            page.close()
 
     def _resolve_dns(self) -> None:
         """Resuelve IPs una sola vez; las usa en `--host-resolver-rules`."""
@@ -212,81 +302,6 @@ class ScraperProvider:
             )
             args.append(f"--host-resolver-rules={rules}")
         return args
-
-    async def _scrape_match_odds(
-        self, ctx: object, match: dict[str, str], sport: str
-    ) -> Market | None:
-        """Navega a la página del partido, hace click en ODDS y extrae cuotas."""
-        from playwright.async_api import BrowserContext
-
-        match_id = match["id"]
-        home = match.get("home", "?")
-        away = match.get("away", "?")
-        ts = match.get("ts", "")
-
-        try:
-            commence = (
-                datetime.fromtimestamp(float(ts), tz=UTC)
-                if ts else datetime.now(UTC)
-            )
-        except (ValueError, OSError):
-            commence = datetime.now(UTC)
-
-        url = f"{_FS_BASE}/match/{match_id}/"
-        logger.debug("Scraper: %s vs %s — %s", home, away, url)
-
-        assert isinstance(ctx, BrowserContext)
-        page = await ctx.new_page()
-        try:
-            await page.goto(url, wait_until="domcontentloaded",
-                            timeout=self._timeout_ms)
-            await asyncio.sleep(2)
-
-            # Hacer click en el tab "ODDS"
-            tabs = await page.query_selector_all("a, button")
-            clicked = False
-            for tab in tabs:
-                try:
-                    txt = (await tab.inner_text()).strip().upper()
-                    if txt in ("ODDS", "ODDS COMPARISON"):
-                        await tab.click()
-                        await asyncio.sleep(3)
-                        clicked = True
-                        break
-                except Exception:
-                    continue
-
-            if not clicked:
-                logger.debug("Scraper: tab ODDS no encontrado para %s", match_id)
-
-            # Extraer pares (bookmaker, odds) de la tabla
-            import json as _json
-            raw_json: str = await page.evaluate(_JS_EXTRACT_ODDS_ROWS)
-            book_odds: list[dict[str, object]] = _json.loads(raw_json)
-            outcomes = _book_odds_to_outcomes(book_odds, home, away)
-
-            if not outcomes:
-                logger.debug(
-                    "Scraper: sin outcomes para %s vs %s (%d bookmakers en DOM)",
-                    home, away, len(book_odds),
-                )
-                return None
-
-            return Market(
-                event_id=f"fs-{match_id}",
-                sport=sport,
-                home_team=home,
-                away_team=away,
-                commence_time=commence,
-                market_key="h2h",
-                outcomes=tuple(outcomes),
-            )
-
-        except Exception as exc:
-            logger.warning("Scraper: error en %s vs %s — %s", home, away, exc)
-            return None
-        finally:
-            await page.close()
 
 
 # ── JS embebido — extrae pares (bookmaker, odds[]) de la tabla de Flashscore ──
