@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from .models import ArbitrageBet, ArbitrageOpportunity, Market
+from collections.abc import Mapping
+
+from .models import ArbitrageBet, ArbitrageOpportunity, Market, Outcome
 
 
 class ArbitrageCalculator:
@@ -31,9 +33,8 @@ class ArbitrageCalculator:
         )
 
     def _distribute_stake(
-        self, best_outcomes: dict[str, object], arb_pct: float
+        self, best_outcomes: Mapping[str, Outcome], arb_pct: float
     ) -> tuple[ArbitrageBet, ...]:
-        from .models import Outcome
         bets: list[ArbitrageBet] = []
         for name, outcome in best_outcomes.items():
             assert isinstance(outcome, Outcome)

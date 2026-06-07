@@ -54,19 +54,18 @@ class TheOddsApiProvider:
 
     def _to_market(self, event: dict[str, object], sport: str) -> Market:
         outcomes: list[Outcome] = []
-        for book in event.get("bookmakers", []):  # type: ignore[union-attr]
+        for book in event.get("bookmakers", []):  # type: ignore[attr-defined]
             assert isinstance(book, dict)
             book_title = str(book.get("title", book.get("key", "desconocido")))
-            for market in book.get("markets", []):  # type: ignore[union-attr]
+            for market in book.get("markets", []):
                 assert isinstance(market, dict)
                 if market.get("key") != self._market_key:
                     continue
-                for oc in market.get("outcomes", []):  # type: ignore[union-attr]
+                for oc in market.get("outcomes", []):
                     assert isinstance(oc, dict)
                     price = oc.get("price")
                     name = oc.get("name")
-                    invalid = price is None or not isinstance(price, (int, float)) or price <= 1.0
-                    if invalid or not name:
+                    if not isinstance(price, (int, float)) or price <= 1.0 or not name:
                         continue
                     outcomes.append(
                         Outcome(name=str(name), bookmaker=book_title, price=float(price))
