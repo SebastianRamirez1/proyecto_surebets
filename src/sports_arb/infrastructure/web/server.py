@@ -15,11 +15,24 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 
 
 def _build_provider() -> object:
-    if settings.odds_provider == "mock":
-        from ..providers.mock_provider import MockOddsProvider
-        return MockOddsProvider(arb_probability=0.5)
-    from ..providers.the_odds_api import TheOddsApiProvider
-    return TheOddsApiProvider(api_key=settings.the_odds_api_key)
+    if settings.odds_provider == "oddspapi":
+        from ..providers.oddspapi_provider import OddsPapiProvider
+        provider = OddsPapiProvider(
+            api_key=settings.oddspapi_key,
+            cache_ttl=settings.api_cache_ttl,
+            max_fixtures=settings.max_fixtures_per_sport,
+        )
+        logger.info(
+            "OddsPapi activo — caché TTL %ds, máx %d fixtures/deporte",
+            settings.api_cache_ttl,
+            settings.max_fixtures_per_sport,
+        )
+        return provider
+    if settings.odds_provider == "the_odds_api":
+        from ..providers.the_odds_api import TheOddsApiProvider
+        return TheOddsApiProvider(api_key=settings.the_odds_api_key)
+    from ..providers.mock_provider import MockOddsProvider
+    return MockOddsProvider(arb_probability=0.5)
 
 
 _provider = _build_provider()
