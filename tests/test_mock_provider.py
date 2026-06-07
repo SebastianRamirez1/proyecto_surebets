@@ -1,4 +1,5 @@
 import pytest
+
 from sports_arb.domain.arbitrage import ArbitrageCalculator
 from sports_arb.infrastructure.providers.mock_provider import MockOddsProvider
 

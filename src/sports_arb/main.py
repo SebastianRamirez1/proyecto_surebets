@@ -1,9 +1,11 @@
 from __future__ import annotations
+
 import asyncio
 import logging
+
+from .application.scan_use_case import ScanForArbitrageUseCase
 from .config import settings
 from .domain.arbitrage import ArbitrageCalculator
-from .application.scan_use_case import ScanForArbitrageUseCase
 from .infrastructure.notifiers.telegram_notifier import TelegramNotifier
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s — %(message)s")

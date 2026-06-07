@@ -1,6 +1,8 @@
 from __future__ import annotations
+
 import random
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
+
 from ...domain.models import Market, Outcome
 
 _BOOKMAKERS = ("Bet365", "Pinnacle", "William Hill", "Betfair", "1xBet")
@@ -39,7 +41,7 @@ class MockOddsProvider:
                     sport=sport,
                     home_team=home,
                     away_team=away,
-                    commence_time=datetime.now(timezone.utc)
+                    commence_time=datetime.now(UTC)
                     + timedelta(hours=self._rng.randint(1, 48)),
                     market_key="h2h",
                     outcomes=tuple(outcomes),
@@ -53,7 +55,7 @@ class MockOddsProvider:
         names = [home, "Empate", away] if three_way else [home, away]
         fair = [2.7, 3.3, 2.9] if three_way else [1.95, 1.95]
         outcomes: list[Outcome] = []
-        for name, fair_price in zip(names, fair):
+        for name, fair_price in zip(names, fair, strict=False):
             for book in self._rng.sample(list(_BOOKMAKERS), k=3):
                 if inject_arb:
                     price = round(fair_price * self._rng.uniform(1.02, 1.12), 2)

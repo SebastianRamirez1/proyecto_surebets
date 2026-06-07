@@ -1,11 +1,12 @@
 """Entry point for uvicorn: wires the use case into the FastAPI app and runs the scan loop."""
 from __future__ import annotations
+
 import asyncio
 import logging
 
+from ...application.scan_use_case import ScanForArbitrageUseCase
 from ...config import settings
 from ...domain.arbitrage import ArbitrageCalculator
-from ...application.scan_use_case import ScanForArbitrageUseCase
 from ...infrastructure.notifiers.telegram_notifier import TelegramNotifier
 from .app import create_app
 

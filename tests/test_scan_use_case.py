@@ -1,8 +1,10 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+
 import pytest
+
+from sports_arb.application.scan_use_case import ScanForArbitrageUseCase
 from sports_arb.domain.arbitrage import ArbitrageCalculator
 from sports_arb.domain.models import ArbitrageOpportunity, Market, Outcome
-from sports_arb.application.scan_use_case import ScanForArbitrageUseCase
 
 
 def _arb_market() -> Market:
@@ -11,7 +13,7 @@ def _arb_market() -> Market:
         sport="soccer",
         home_team="A",
         away_team="B",
-        commence_time=datetime(2026, 6, 10, tzinfo=timezone.utc),
+        commence_time=datetime(2026, 6, 10, tzinfo=UTC),
         market_key="h2h",
         outcomes=(
             Outcome("A", "Bet365", 2.10),

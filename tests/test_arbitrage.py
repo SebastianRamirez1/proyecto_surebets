@@ -1,5 +1,7 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+
 import pytest
+
 from sports_arb.domain.arbitrage import ArbitrageCalculator
 from sports_arb.domain.models import Market, Outcome
 
@@ -10,7 +12,7 @@ def _market(outcomes: list[Outcome], market_key: str = "h2h") -> Market:
         sport="soccer",
         home_team="Equipo A",
         away_team="Equipo B",
-        commence_time=datetime(2026, 6, 10, tzinfo=timezone.utc),
+        commence_time=datetime(2026, 6, 10, tzinfo=UTC),
         market_key=market_key,
         outcomes=tuple(outcomes),
     )

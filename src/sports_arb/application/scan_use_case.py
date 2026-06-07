@@ -1,5 +1,7 @@
 from __future__ import annotations
+
 import logging
+
 from ..domain.arbitrage import ArbitrageCalculator
 from ..domain.models import ArbitrageOpportunity
 from ..domain.ports import OddsProvider, OpportunityNotifier

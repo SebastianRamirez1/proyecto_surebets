@@ -1,6 +1,7 @@
 from __future__ import annotations
+
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,7 +61,7 @@ class ArbitrageOpportunity:
     bets: tuple[ArbitrageBet, ...]
     total_stake: float
     arb_percentage: float
-    detected_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    detected_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     @property
     def profit_margin(self) -> float:

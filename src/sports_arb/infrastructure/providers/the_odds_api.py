@@ -1,6 +1,9 @@
 from __future__ import annotations
+
 from datetime import datetime
+
 import httpx
+
 from ...domain.models import Market, Outcome
 
 _BASE_URL = "https://api.the-odds-api.com/v4"
@@ -62,7 +65,8 @@ class TheOddsApiProvider:
                     assert isinstance(oc, dict)
                     price = oc.get("price")
                     name = oc.get("name")
-                    if price is None or not isinstance(price, (int, float)) or price <= 1.0 or not name:
+                    invalid = price is None or not isinstance(price, (int, float)) or price <= 1.0
+                    if invalid or not name:
                         continue
                     outcomes.append(
                         Outcome(name=str(name), bookmaker=book_title, price=float(price))

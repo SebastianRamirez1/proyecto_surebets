@@ -1,6 +1,9 @@
 from __future__ import annotations
+
 import logging
+
 import httpx
+
 from ...domain.models import ArbitrageOpportunity
 
 logger = logging.getLogger(__name__)
@@ -30,7 +33,7 @@ class TelegramNotifier:
         margin_pct = opp.profit_margin * 100
         profit = opp.profit_amount
         lines = [
-            f"<b>Sure Bet detectada</b>",
+            "<b>Sure Bet detectada</b>",
             f"Partido: {opp.market.label}",
             f"Deporte: {opp.market.sport}",
             f"Margen: <b>{margin_pct:.2f}%</b>",
